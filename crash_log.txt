@@ -1,0 +1,30 @@
+Traceback (most recent call last):
+  File "D:\Anantkaal\drone\PHASE1\main.py", line 297, in <module>
+    main()
+  File "D:\Anantkaal\drone\PHASE1\main.py", line 78, in main
+    detector = Detector()
+  File "D:\Anantkaal\drone\PHASE1\detection.py", line 104, in __init__
+    _ensure_onnx()
+  File "D:\Anantkaal\drone\PHASE1\detection.py", line 75, in _ensure_onnx
+    _export_onnx()
+  File "D:\Anantkaal\drone\PHASE1\detection.py", line 37, in _export_onnx
+    model = YOLO(MODEL_PT)
+  File "C:\Users\dev29\AppData\Local\Programs\Python\Python39\lib\site-packages\ultralytics\models\yolo\model.py", line 76, in __init__
+    super().__init__(model=model, task=task, verbose=verbose)
+  File "C:\Users\dev29\AppData\Local\Programs\Python\Python39\lib\site-packages\ultralytics\engine\model.py", line 144, in __init__
+    self._load(model, task=task)
+  File "C:\Users\dev29\AppData\Local\Programs\Python\Python39\lib\site-packages\ultralytics\engine\model.py", line 283, in _load
+    self.model, self.ckpt = load_checkpoint(weights)
+  File "C:\Users\dev29\AppData\Local\Programs\Python\Python39\lib\site-packages\ultralytics\nn\tasks.py", line 1515, in load_checkpoint
+    ckpt, weight = torch_safe_load(weight)  # load ckpt
+  File "C:\Users\dev29\AppData\Local\Programs\Python\Python39\lib\site-packages\ultralytics\nn\tasks.py", line 1463, in torch_safe_load
+    ckpt = torch_load(file, map_location="cpu")
+  File "C:\Users\dev29\AppData\Local\Programs\Python\Python39\lib\site-packages\ultralytics\utils\patches.py", line 178, in torch_load
+    return torch.load(*args, **kwargs)
+  File "C:\Users\dev29\AppData\Local\Programs\Python\Python39\lib\site-packages\torch\serialization.py", line 1319, in load
+    with _open_file_like(f, "rb") as opened_file:
+  File "C:\Users\dev29\AppData\Local\Programs\Python\Python39\lib\site-packages\torch\serialization.py", line 659, in _open_file_like
+    return _open_file(name_or_buffer, mode)
+  File "C:\Users\dev29\AppData\Local\Programs\Python\Python39\lib\site-packages\torch\serialization.py", line 640, in __init__
+    super().__init__(open(name, mode))
+FileNotFoundError: [Errno 2] No such file or directory: 'best1.pt'
