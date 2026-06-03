@@ -65,7 +65,7 @@ def best_match(detections, predicted_box, max_dist=120):
 
 # ── 8-state Kalman tracker ────────────────────────────────────────────────────
 class KalmanTracker:
-    MAX_LOST     = 45
+    MAX_LOST     = 20 # 45
     REMATCH_DIST = 120
 
     def __init__(self):

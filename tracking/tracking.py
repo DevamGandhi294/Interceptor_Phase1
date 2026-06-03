@@ -1,36 +1,28 @@
 """
-tracking/tracking.py  —  Hybrid YOLO + DaSiamRPN + Kalman state machine
-========================================================================
-Single-target. Your design:
+tracking/tracking.py  —  Pure tracker (DaSiamRPN), NO YOLO re-verify
+=====================================================================
+Design (your latest):
+  YOLO finds object ONCE -> user SPACE -> DaSiamRPN locks on
+  DaSiamRPN tracks EVERY frame, 100% on its own. No YOLO re-check.
+  Kalman ONLY fills in when DaSiam itself reports failure (coasting).
+  DaSiam + Kalman both fail -> LOST -> YOLO detects again, wait for SPACE.
 
-  YOLO detects -> user permits (SPACE) -> DaSiamRPN locks on
-  DaSiamRPN tracks EVERY frame (smooth, fast, survives YOLO gaps)
-  Kalman smooths DaSiam output + predicts when DaSiam fails
-  Every N frames YOLO re-checks; if DaSiam drifted (low IoU) -> re-init DaSiam
-  DaSiam fails -> Kalman COASTS -> times out -> LOST
-  LOST: YOLO keeps detecting (boxes shown) but waits for user SPACE to re-lock
+This is the smoothest single-target setup: nothing interrupts the tracker.
 
 States: SEARCHING -> TRACKING -> COASTING -> LOST -> (SEARCHING)
 
-Public API (used by main.py):
+API (main.py):
     ht = HybridTracker()
-    ht.lock(frame, box)              # called on user SPACE
+    ht.lock(frame, box)                 # user SPACE on a YOLO detection
     out = ht.update(frame, detections)  # every frame
     ht.reset()
-  out = dict:
-    {'state', 'box'(x1y1x2y2 or None), 'center'(cx,cy or None),
-     'name'(tracker backend), 'drifted'(bool last recheck)}
+  out = {'state','box','center','name'}
 """
 
 import cv2
 
 from tracking.tracker_factory import make_tracker
-from tracking.kalman import KalmanTracker, iou
-from config import (
-    YOLO_RECHECK_EVERY,
-    DRIFT_IOU_MIN,
-    REACQUIRE_SECONDS,
-)
+from tracking.kalman import KalmanTracker
 
 
 def _xywh_to_xyxy(b):
@@ -44,7 +36,6 @@ def _xyxy_to_xywh(b):
 
 
 class HybridTracker:
-    # states
     SEARCHING = "SEARCHING"
     TRACKING  = "TRACKING"
     COASTING  = "COASTING"
@@ -56,82 +47,78 @@ class HybridTracker:
         self.tracker = None
         self.name = "-"
         self.kalman = KalmanTracker()
-        self._frame_since_check = 0
-        self.drifted = False
 
-    # ── lifecycle ────────────────────────────────────────────────────────────
+    # ── lock / reset ───────────────────────────────────────────────────────────
     def lock(self, frame, box):
-        """User-permitted lock. box = (x1,y1,x2,y2,...) from a YOLO detection."""
+        """User-permitted lock. box=(x1,y1,x2,y2,...) from a YOLO detection."""
         xyxy = box[:4]
         self.tracker, self.name = make_tracker(self.log)
-        ok = self.tracker.init(frame, _xyxy_to_xywh(xyxy))
-        if not ok:
-            self.log("[HYB] tracker init failed")
+        if not self.tracker.init(frame, _xyxy_to_xywh(xyxy)):
+            self.log("[TRK] init failed")
             self.state = self.SEARCHING
             return False
         self.kalman.init(xyxy)
         self.state = self.TRACKING
-        self._frame_since_check = 0
-        self.drifted = False
-        self.log(f"[HYB] Locked via {self.name}")
+        self.log(f"[TRK] Locked via {self.name}")
         return True
 
     def reset(self):
         self.state = self.SEARCHING
         self.tracker = None
         self.kalman.reset()
-        self._frame_since_check = 0
-        self.drifted = False
 
     # ── per-frame update ──────────────────────────────────────────────────────
     def update(self, frame, detections):
+        # Idle states: tracker not running. Report LOST if YOLO sees something
+        # (so user can re-lock), else SEARCHING.
         if self.state in (self.SEARCHING, self.LOST):
-            # YOLO still runs in main; we just stay idle awaiting user SPACE.
-            # If detections exist we report LOST (re-lock available), else SEARCHING.
             self.state = self.LOST if detections else self.SEARCHING
             return self._out(None)
 
-        # ── TRACKING / COASTING ────────────────────────────────────────────────
+        # TRACKING / COASTING: run the tracker, NOTHING interrupts it.
         ok, box_xywh = self.tracker.update(frame)
-        box_xyxy = _xywh_to_xyxy(box_xywh) if ok else None
 
-        if ok and box_xyxy is not None:
-            # smooth with Kalman
+        if ok:
+            box_xyxy = _xywh_to_xyxy(box_xywh)
+            
+            # Kalman predicts where drone SHOULD be (velocity feed-forward)
             self.kalman.update(box_xyxy)
-            self.state = self.TRACKING
-
-            # periodic YOLO drift re-check
-            self._frame_since_check += 1
-            if self._frame_since_check >= YOLO_RECHECK_EVERY and detections:
-                self._frame_since_check = 0
-                best = max(detections, key=lambda d: iou(d, box_xyxy))
-                if iou(best, box_xyxy) < DRIFT_IOU_MIN:
-                    # DaSiam drifted -> re-init from YOLO box
-                    self.drifted = True
+            pred = self.kalman.predict()
+            
+            # If DaSiam result drifted far from Kalman's velocity prediction,
+            # the search window probably lost the fast target — re-seed DaSiam
+            # at the predicted position.
+            if pred is not None:
+                px1, py1, px2, py2 = pred
+                pcx, pcy = (px1+px2)//2, (py1+py2)//2
+                bcx, bcy = (box_xyxy[0]+box_xyxy[2])//2, (box_xyxy[1]+box_xyxy[3])//2
+                jump = ((pcx-bcx)**2 + (pcy-bcy)**2) ** 0.5
+                if jump > FAST_RESEED_PX:
+                    # re-init tracker centered on prediction
+                    w = box_xyxy[2]-box_xyxy[0]
+                    h = box_xyxy[3]-box_xyxy[1]
+                    new = (pcx-w//2, pcy-h//2, pcx+w//2, pcy+h//2)
                     self.tracker, self.name = make_tracker(self.log)
-                    self.tracker.init(frame, _xyxy_to_xywh(best[:4]))
-                    self.kalman.init(best[:4])
-                    box_xyxy = best[:4]
-                    self.log("[HYB] DaSiam drifted -> re-init from YOLO")
-                else:
-                    self.drifted = False
-
+                    self.tracker.init(frame, _xyxy_to_xywh(new))
+                    box_xyxy = new
+            
+            self.state = self.TRACKING
             return self._out(box_xyxy)
 
-        # tracker failed this frame -> COAST on Kalman prediction
+        # Tracker failed this frame -> coast on Kalman prediction.
         pred = self.kalman.predict()
         self.kalman.mark_lost()
         if pred is not None and not self.kalman.is_lost:
             self.state = self.COASTING
             return self._out(pred)
 
-        # Kalman timed out -> fully lost, await user permission
-        self.state = self.LOST if detections else self.SEARCHING
+        # Both failed -> fully lost, await user re-lock.
         self.tracker = None
-        self.log("[HYB] Target lost -> awaiting user re-lock (SPACE)")
+        self.state = self.LOST if detections else self.SEARCHING
+        self.log("[TRK] Lost -> awaiting re-lock (SPACE)")
         return self._out(None)
 
-    # ── output helper ─────────────────────────────────────────────────────────
+    # ── output ─────────────────────────────────────────────────────────────────
     def _out(self, box):
         center = None
         if box is not None:
@@ -142,5 +129,4 @@ class HybridTracker:
             "box":    tuple(box[:4]) if box is not None else None,
             "center": center,
             "name":   self.name,
-            "drifted": self.drifted,
         }

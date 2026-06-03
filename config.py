@@ -73,7 +73,7 @@ CLAHE_TILE_GRID    = (8, 8)
 # ── Kalman filter noise ───────────────────────────────────────────────────────
 KALMAN_PROCESS_NOISE  = 0.03
 KALMAN_MEASURE_NOISE  = 0.5
-KALMAN_LOST_TIMEOUT_S = 3.0
+KALMAN_LOST_TIMEOUT_S = 1.0 # 3.0 
 KALMAN_RELOCK_EVERY   = 8
 
 # ── DriftGuard thresholds ─────────────────────────────────────────────────────
@@ -147,10 +147,12 @@ CRSF_BAUD = 420000
 # Camera index — Windows laptop webcam is usually 0
 CAMERA_INDEX = 0     if _IS_WIN else 1
 
-REACQUIRE_SECONDS = 5.0
+REACQUIRE_SECONDS = 1.0 # 5.0
 
 # Lower = catches drift faster but more jumpy. Higher = smoother but drifts more.
 YOLO_RECHECK_EVERY = 15
  
 # If YOLO box vs DaSiam box IoU falls below this at re-check -> re-init DaSiam.
 DRIFT_IOU_MIN = 0.30
+
+FAST_RESEED_PX = 60
