@@ -17,6 +17,7 @@ import shutil
 import cv2
 import numpy as np
 import onnxruntime as ort
+from config import USE_NPU, YOLO_QNN_MODEL, QNN_BACKEND_LIB
 
 # Config — move these to config.py later if you want them centralised.
 CONFIDENCE      = 0.50

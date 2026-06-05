@@ -5,13 +5,15 @@ Pipeline:  camera -> detection -> kalman -> command_sender(open-loop)
                   -> gui -> blackbox -> flight_logger
 
 Phase 1 safety: command_sender only SENDS RC to the FC if
-config.ENABLE_FC_OUTPUT is True. Keep it False on the tripod —
-RC values are still computed and logged so you can verify direction.
+config.ENABLE_FC_OUTPUT is True. Keep it False on the tripod.
 
-Controls:
-    SPACE = lock nearest detection      R = reset lock
-    V     = open video file             C = back to webcam
-    Q     = quit
+HEADLESS (config.HEADLESS): when True (drone in flight, no monitor),
+all GUI windows are skipped but detection/tracking/recording/FC keep
+running. Lock is triggered by CH8 on the radio instead of SPACE.
+
+Controls (windowed mode):
+    SPACE = lock nearest    R = reset    V = video file    C = webcam    Q = quit
+Headless: CH8 high = lock,  Ctrl-C = quit
 """
 
 import sys
@@ -21,7 +23,7 @@ import traceback
 import cv2
 import numpy as np
 
-from config import WIDTH, HEIGHT
+from config import WIDTH, HEIGHT, HEADLESS
 from camera import open_source, CameraThread
 from detection import Detector, CLASSES
 from tracking.kalman import KalmanTracker, best_match
@@ -64,15 +66,17 @@ def reset_tracking():
 
 def main():
     WINDOW = "Drone Tracker"
-    cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(WINDOW, WIDTH, HEIGHT)
 
-    # splash
-    splash = np.zeros((HEIGHT, WIDTH, 3), np.uint8)
-    cv2.putText(splash, "Loading...", (WIDTH // 2 - 70, HEIGHT // 2),
-                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 200, 255), 2)
-    cv2.imshow(WINDOW, splash)
-    cv2.waitKey(1)
+    if not HEADLESS:
+        cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(WINDOW, WIDTH, HEIGHT)
+        splash = np.zeros((HEIGHT, WIDTH, 3), np.uint8)
+        cv2.putText(splash, "Loading...", (WIDTH // 2 - 70, HEIGHT // 2),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 200, 255), 2)
+        cv2.imshow(WINDOW, splash)
+        cv2.waitKey(1)
+    else:
+        print("[MAIN] HEADLESS mode — no GUI window. CH8=lock, Ctrl-C=quit")
 
     # ── modules ────────────────────────────────────────────────────────────────
     detector = Detector()
@@ -100,14 +104,15 @@ def main():
     predicted_box = None
     matched_box = None
 
-    print("\nControls: SPACE=lock  R=reset  V=video  C=cam  Q=quit\n")
+    if not HEADLESS:
+        print("\nControls: SPACE=lock  R=reset  V=video  C=cam  Q=quit\n")
 
     while True:
         ok, frame = cam.read()
         if not ok or frame is None:
             if is_file and cam.is_eof():
                 cam.reset_video()
-            cv2.waitKey(5)
+            time.sleep(0.005)
             continue
 
         fh, fw = frame.shape[:2]
@@ -191,7 +196,7 @@ def main():
         else:
             tstatus = "LOCKED"
 
-        # ── blackbox (CLEAN frame + telemetry) ───────────────────────────────────
+        # ── blackbox (CLEAN frame + telemetry) — ALWAYS runs, even headless ──────
         blackbox.write(frame, {
             "armed":   fc_state.get("armed", False),
             "follow":  follow,
@@ -208,7 +213,7 @@ def main():
             "area":    box_area,
         })
 
-        # ── flight logger (CSV) ──────────────────────────────────────────────────
+        # ── flight logger (CSV) — ALWAYS runs ────────────────────────────────────
         flog.tick(
             fps=fps, locked=lock_active,
             direction=("LOST" if tstatus == "COAST" else "ON TARGET"),
@@ -216,33 +221,35 @@ def main():
             fc_state=fc_state, follow=follow, throttle=throttle,
         )
 
-        # ── live window HUD (drawn on a copy) ────────────────────────────────────
-        display = frame.copy()
-        if lock_active:
-            inset = matched_box or predicted_box
-            if inset:
-                display = draw_zoom_inset(display, inset)
+        # ── live window HUD (windowed mode only) ─────────────────────────────────
+        key = 255
+        if not HEADLESS:
+            display = frame.copy()
+            if lock_active:
+                inset = matched_box or predicted_box
+                if inset:
+                    display = draw_zoom_inset(display, inset)
+            display = draw_hud(display, {
+                'aim': (aim_x, aim_y),
+                'detections': detections,
+                'fps': fps,
+                'lock_active': lock_active,
+                'predicted_box': predicted_box,
+                'matched_box': matched_box,
+                'delta': delta,
+                'tracker': tracker,
+                'attitude': attitude,
+                'source_label': source_label,
+            })
+            cv2.imshow(WINDOW, display)
+            key = cv2.waitKey(1) & 0xFF
 
-        display = draw_hud(display, {
-            'aim': (aim_x, aim_y),
-            'detections': detections,
-            'fps': fps,
-            'lock_active': lock_active,
-            'predicted_box': predicted_box,
-            'matched_box': matched_box,
-            'delta': delta,
-            'tracker': tracker,
-            'attitude': attitude,
-            'source_label': source_label,
-        })
+        # ── lock trigger: SPACE (windowed) OR CH8 auto-request (radio) ───────────
+        want_lock = (key == ord(' '))
+        if sender is not None and sender.poll_and_clear_auto_lock():
+            want_lock = True
 
-        cv2.imshow(WINDOW, display)
-
-        # ── keys ─────────────────────────────────────────────────────────────────
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            break
-        elif key == ord(' '):
+        if want_lock and not lock_active:
             if detections:
                 aimed = min(detections, key=lambda d:
                             ((d[0] + d[2]) // 2 - aim_x) ** 2 +
@@ -257,6 +264,10 @@ def main():
                       f"conf={aimed[4]:.2f}")
             else:
                 print("[MAIN] No detection to lock")
+
+        # ── other keys (windowed mode only) ──────────────────────────────────────
+        if key == ord('q'):
+            break
         elif key == ord('r'):
             lock_active, delta, predicted_box, matched_box = reset_tracking()
             tracker.reset()
@@ -288,13 +299,16 @@ def main():
     flog.close()
     if sender is not None:
         sender.close()
-    cv2.destroyAllWindows()
+    if not HEADLESS:
+        cv2.destroyAllWindows()
     print("[MAIN] Clean exit")
 
 
 if __name__ == "__main__":
     try:
         main()
+    except KeyboardInterrupt:
+        print("\n[MAIN] Ctrl-C — shutting down")
     except Exception:
         traceback.print_exc()
         try:

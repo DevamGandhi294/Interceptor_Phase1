@@ -11,6 +11,7 @@ import os
 import platform
 import threading
 import time
+from config import WIDTH, HEIGHT, TARGET_FPS, CAMERA_INDEX, CAMERA_IS_MIPI
 
 import cv2
 
@@ -87,12 +88,28 @@ def open_source(source=None, log_fn=None):
 
     cam_idx = CAMERA_INDEX if source is None else int(source)
 
+    # ── Windows: DirectShow ───────────────────────────────────────────────────
     if IS_WIN:
         cap = cv2.VideoCapture(cam_idx, cv2.CAP_DSHOW)
         if cap.isOpened():
             return _cfg_cam(cap, "DirectShow", cam_idx), f"Camera[{cam_idx}]", False
         log("[CAM] DirectShow failed — trying default")
 
+    # ── Radxa MIPI CSI camera: GStreamer (only if CAMERA_IS_MIPI) ──────────────
+    if IS_LIN and CAMERA_IS_MIPI:
+        pipeline = (
+            f"qtiqmmfsrc ! video/x-raw,width={WIDTH},height={HEIGHT},"
+            f"framerate={TARGET_FPS}/1 ! videoconvert ! "
+            f"appsink drop=true max-buffers=1"
+        )
+        cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+        if cap.isOpened():
+            for _ in range(5): cap.read()
+            log(f"[CAM] MIPI-GStreamer: {WIDTH}x{HEIGHT} @ {TARGET_FPS}fps")
+            return cap, "Camera[MIPI]", False
+        log("[CAM] MIPI GStreamer failed — trying V4L2")
+
+    # ── Linux USB: V4L2 ────────────────────────────────────────────────────────
     if IS_LIN:
         cap = cv2.VideoCapture(cam_idx, cv2.CAP_V4L2)
         if cap.isOpened():
@@ -100,10 +117,12 @@ def open_source(source=None, log_fn=None):
             return _cfg_cam(cap, "V4L2", cam_idx), f"Camera[{cam_idx}]", False
         log("[CAM] V4L2 failed — trying default")
 
+    # ── Generic default ────────────────────────────────────────────────────────
     cap = cv2.VideoCapture(cam_idx)
     if cap.isOpened():
         return _cfg_cam(cap, "Default", cam_idx), f"Camera[{cam_idx}]", False
 
+    # ── Scan other indices ─────────────────────────────────────────────────────
     for idx in [0, 1, 2]:
         if idx == cam_idx:
             continue
