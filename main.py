@@ -1,29 +1,31 @@
 """
-main.py  —  Drone Aim Tracker  (Phase 1 integration)
-====================================================
-Pipeline:  camera -> detection -> kalman -> command_sender(open-loop)
+main.py  —  Drone Aim Tracker  (Phase 1 integration, NPU-ready)
+===============================================================
+Pipeline:  camera -> detection(NPU/CPU) -> kalman -> command_sender
                   -> gui -> blackbox -> flight_logger
 
-Phase 1 safety: command_sender only SENDS RC to the FC if
-config.ENABLE_FC_OUTPUT is True. Keep it False on the tripod.
+CLI flags (for Radxa NPU):
+    --cam N             camera index (overrides config CAMERA_INDEX)
+    --model PATH        model file (e.g. models/best1_qnn.bin for NPU)
+    --backend-path PATH libQnnHtp.so path for the NPU
+    --imgsz N           model input size (default 640)
 
-HEADLESS (config.HEADLESS): when True (drone in flight, no monitor),
-all GUI windows are skipped but detection/tracking/recording/FC keep
-running. Lock is triggered by CH8 on the radio instead of SPACE.
+HEADLESS (config.HEADLESS): no GUI window; recording + tracking keep
+running; lock triggered by CH8 on the radio instead of SPACE.
 
-Controls (windowed mode):
-    SPACE = lock nearest    R = reset    V = video file    C = webcam    Q = quit
-Headless: CH8 high = lock,  Ctrl-C = quit
+Windowed keys: SPACE=lock  R=reset  V=video  C=cam  Q=quit
+Headless:      CH8 high=lock, Ctrl-C=quit
 """
 
 import sys
 import time
+import argparse
 import traceback
 
 import cv2
 import numpy as np
 
-from config import WIDTH, HEIGHT, HEADLESS
+from config import WIDTH, HEIGHT, HEADLESS, ENABLE_DRONE
 from camera import open_source, CameraThread
 from detection import Detector, CLASSES
 from tracking.kalman import KalmanTracker, best_match
@@ -31,14 +33,14 @@ from gui import draw_hud, draw_zoom_inset
 from drone.blackbox import BlackBox
 from drone.flight_logger import FlightLogger
 
-# command_sender pulls in CRSF + FC readers; wrap in try so vision-only
-# testing still works if no FC/ELRS hardware is attached.
-try:
-    from drone.command_sender import CommandSender
-    HAVE_SENDER = True
-except Exception as e:
-    print(f"[MAIN] command_sender unavailable ({e}) — vision-only mode")
-    HAVE_SENDER = False
+# command_sender pulls in CRSF + FC readers; only import if drone enabled.
+HAVE_SENDER = False
+if ENABLE_DRONE:
+    try:
+        from drone.command_sender import CommandSender
+        HAVE_SENDER = True
+    except Exception as e:
+        print(f"[MAIN] command_sender unavailable ({e}) — vision-only mode")
 
 
 # ── FPS counter ───────────────────────────────────────────────────────────────
@@ -60,11 +62,10 @@ class FPSCounter:
 
 
 def reset_tracking():
-    """fresh (lock_active, delta, predicted_box, matched_box)."""
     return False, (0, 0), None, None
 
 
-def main():
+def main(args):
     WINDOW = "Drone Tracker"
 
     if not HEADLESS:
@@ -79,7 +80,11 @@ def main():
         print("[MAIN] HEADLESS mode — no GUI window. CH8=lock, Ctrl-C=quit")
 
     # ── modules ────────────────────────────────────────────────────────────────
-    detector = Detector()
+    detector = Detector(
+        backend_path=args.backend_path,
+        model_path=args.model,
+        input_size=args.imgsz,
+    )
     tracker  = KalmanTracker()
     fps_c    = FPSCounter()
     blackbox = BlackBox()
@@ -94,9 +99,9 @@ def main():
             print(f"[MAIN] CommandSender init failed ({e}) — vision-only")
 
     # ── camera ───────────────────────────────────────────────────────────────────
-    cap, source_label, is_file = open_source()
+    cap, source_label, is_file = open_source(args.cam)
     cam = CameraThread(cap, is_file=is_file)
-    time.sleep(0.3)   # let first frame arrive
+    time.sleep(0.3)
 
     # ── state ────────────────────────────────────────────────────────────────────
     lock_active = False
@@ -177,7 +182,6 @@ def main():
             follow   = sender.is_follow_active()
             throttle = sender.get_throttle()
 
-        # ── attitude for HUD ─────────────────────────────────────────────────────
         attitude = None
         if fc_state:
             attitude = {
@@ -186,7 +190,6 @@ def main():
                 'roll':  fc_state.get('roll',  0.0),
             }
 
-        # ── tracker status string ────────────────────────────────────────────────
         if not lock_active:
             tstatus = "IDLE"
         elif tracker.reacquiring:
@@ -196,7 +199,7 @@ def main():
         else:
             tstatus = "LOCKED"
 
-        # ── blackbox (CLEAN frame + telemetry) — ALWAYS runs, even headless ──────
+        # ── blackbox (CLEAN frame) — ALWAYS runs ─────────────────────────────────
         blackbox.write(frame, {
             "armed":   fc_state.get("armed", False),
             "follow":  follow,
@@ -213,7 +216,7 @@ def main():
             "area":    box_area,
         })
 
-        # ── flight logger (CSV) — ALWAYS runs ────────────────────────────────────
+        # ── flight logger — ALWAYS runs ──────────────────────────────────────────
         flog.tick(
             fps=fps, locked=lock_active,
             direction=("LOST" if tstatus == "COAST" else "ON TARGET"),
@@ -221,7 +224,7 @@ def main():
             fc_state=fc_state, follow=follow, throttle=throttle,
         )
 
-        # ── live window HUD (windowed mode only) ─────────────────────────────────
+        # ── live window (windowed mode only) ─────────────────────────────────────
         key = 255
         if not HEADLESS:
             display = frame.copy()
@@ -244,7 +247,7 @@ def main():
             cv2.imshow(WINDOW, display)
             key = cv2.waitKey(1) & 0xFF
 
-        # ── lock trigger: SPACE (windowed) OR CH8 auto-request (radio) ───────────
+        # ── lock trigger: SPACE (windowed) OR CH8 (radio) ────────────────────────
         want_lock = (key == ord(' '))
         if sender is not None and sender.poll_and_clear_auto_lock():
             want_lock = True
@@ -265,7 +268,7 @@ def main():
             else:
                 print("[MAIN] No detection to lock")
 
-        # ── other keys (windowed mode only) ──────────────────────────────────────
+        # ── other keys (windowed only) ───────────────────────────────────────────
         if key == ord('q'):
             break
         elif key == ord('r'):
@@ -285,7 +288,7 @@ def main():
         elif key == ord('c'):
             try:
                 cam.release()
-                cap, source_label, is_file = open_source()
+                cap, source_label, is_file = open_source(args.cam)
                 cam = CameraThread(cap, is_file=is_file)
                 time.sleep(0.3)
                 lock_active, delta, predicted_box, matched_box = reset_tracking()
@@ -305,8 +308,18 @@ def main():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--cam", type=int, default=None,
+                        help="camera index (overrides config CAMERA_INDEX)")
+    parser.add_argument("--backend-path", type=str, default=None,
+                        help="path to libQnnHtp.so for NPU")
+    parser.add_argument("--model", type=str, default=None,
+                        help="override model path (e.g. models/best1_qnn.bin)")
+    parser.add_argument("--imgsz", type=int, default=640,
+                        help="model input size")
+    args = parser.parse_args()
     try:
-        main()
+        main(args)
     except KeyboardInterrupt:
         print("\n[MAIN] Ctrl-C — shutting down")
     except Exception:

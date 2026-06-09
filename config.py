@@ -18,7 +18,7 @@ _IS_LIN = _platform.system() == "Linux"
 WIDTH        = 640
 HEIGHT       = 480
 TARGET_FPS   = 30
-CAMERA_INDEX = 0              # USB webcam usually 0 on both Windows and Radxa
+CAMERA_INDEX = 0 if _IS_WIN else 19              # USB webcam usually 0 on both Windows and Radxa
 CAMERA_IS_MIPI = False        # True on Radxa if using MIPI CSI cam (GStreamer)
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -46,7 +46,7 @@ DASIAMRPN_KERNEL_R1   = "models/dasiamrpn_kernel_r1.onnx"
 USE_NPU         = _IS_LIN
 # QNN-converted YOLO model (created on Radxa via AI Hub / QAIRT).
 # Falls back to the CPU .onnx automatically if this doesn't exist.
-YOLO_QNN_MODEL  = "models/best1_qnn.onnx"
+YOLO_QNN_MODEL = "models/best1_qnn.onnx"   # was .bin
 QNN_BACKEND_LIB = "libQnnHtp.so"     # Hexagon Tensor Processor backend
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -175,4 +175,7 @@ BLACKBOX_MAX_MIN = 10
 FLIGHT_LOG_DIR      = "logs"
 FLIGHT_LOG_INTERVAL = 1
 
-HEADLESS = _IS_LIN
+HEADLESS = False
+
+ENABLE_DRONE = False
+

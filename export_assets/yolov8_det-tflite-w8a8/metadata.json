@@ -1,0 +1,75 @@
+{
+    "model_id": "yolov8_det",
+    "model_name": "YOLOv8-Detection",
+    "runtime": "tflite",
+    "precision": "w8a8",
+    "tool_versions": {
+        "qairt": "2.45.0.260326154327",
+        "litert": "1.4.3"
+    },
+    "model_files": {
+        "yolov8_det.tflite": {
+            "inputs": {
+                "image": {
+                    "shape": [
+                        1,
+                        640,
+                        640,
+                        3
+                    ],
+                    "dtype": "uint8",
+                    "quantization_parameters": {
+                        "scale": 0.003921568859368563,
+                        "zero_point": 0
+                    },
+                    "io_type": "image",
+                    "image_metadata": {},
+                    "value_range": [
+                        0.0,
+                        1.0
+                    ]
+                }
+            },
+            "outputs": {
+                "boxes": {
+                    "shape": [
+                        1,
+                        8400,
+                        4
+                    ],
+                    "dtype": "uint8",
+                    "quantization_parameters": {
+                        "scale": 3.1009654998779297,
+                        "zero_point": 25
+                    },
+                    "io_type": "bbox",
+                    "bbox_metadata": {}
+                },
+                "scores": {
+                    "shape": [
+                        1,
+                        8400
+                    ],
+                    "dtype": "uint8",
+                    "quantization_parameters": {
+                        "scale": 0.00390625,
+                        "zero_point": 0
+                    },
+                    "softmax_applied": true,
+                    "labels_file": "coco_labels.txt"
+                },
+                "class_idx": {
+                    "shape": [
+                        1,
+                        8400
+                    ],
+                    "dtype": "uint8",
+                    "labels_file": "coco_labels.txt"
+                }
+            }
+        }
+    },
+    "supplementary_files": {
+        "labels.txt": "Mapping of model prediction indices -> string labels."
+    }
+}
